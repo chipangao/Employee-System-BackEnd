@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO 消息测试</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Socket.IO 消息测试</h1>
+    <button onclick="sendMessage()">发送消息</button>
+    <script>
+        const socket = io("http://localhost:5000");
+
+        // 监听服务器消息
+        socket.on("server_message", (data) => {
+            console.log("💬 服务器欢迎消息:", data);
+        });
+
+        socket.on("server_response", (data) => {
+            console.log("🔄 服务器回复:", data);
+        });
+
+        // 发送消息到服务器
+        function sendMessage() {
+            const text = prompt("输入要发送的消息:");
+            if (text) {
+                socket.emit("client_message", { text: text });
+                console.log("📤 已发送消息:", text);
+            }
+        }
+    </script>
+</body>
+</html>

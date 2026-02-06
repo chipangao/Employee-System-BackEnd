@@ -1,0 +1,11 @@
+
+# local cache
+/Dockerfile
+/venv
+/__pycache__
+__pycache__/
+/db
+
+# misc
+.DS_Store
+.DS_Store?
