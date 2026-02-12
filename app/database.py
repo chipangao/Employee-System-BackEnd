@@ -1,5 +1,7 @@
-import psycopg2
-from psycopg2 import errors, pool
+# 修改導入部分
+import psycopg
+from psycopg_pool import ConnectionPool  # psycopg 3 的連線池
+from psycopg import errors
 from flask import current_app
 import threading
 import atexit
@@ -51,36 +53,40 @@ class PostgresDBManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
-                cls._instance.connection_params = {
-                    'dbname': app.config.get('POSTGRES_DB', 'creation'),
-                    'user': app.config.get('POSTGRES_USER', 'chipang'),
-                    'password': app.config.get('POSTGRES_PASSWORD', 'root'),
-                    'host': app.config.get('POSTGRES_HOST', 'localhost'),
-                    'port': app.config.get('POSTGRES_PORT', '5432')
-                }
                 
-                # 初始化連接池
+                # ✅ psycopg 3 使用 dsn 字串更簡單
+                dsn = f"dbname={app.config.get('POSTGRES_DB', 'creation')} " \
+                      f"user={app.config.get('POSTGRES_USER', 'chipang')} " \
+                      f"password={app.config.get('POSTGRES_PASSWORD', 'root')} " \
+                      f"host={app.config.get('POSTGRES_HOST', 'localhost')} " \
+                      f"port={app.config.get('POSTGRES_PORT', '5432')}"
+                
+                cls._instance.dsn = dsn
+                
+                # ✅ 初始化 psycopg 3 連接池
                 cls._instance._init_connection_pool(
                     min_conn=app.config.get('POSTGRES_MIN_CONN', 1),
                     max_conn=app.config.get('POSTGRES_MAX_CONN', 20)
                 )
                 
-                # 註冊關閉鉤子 - 修改為使用 atexit
+                # 註冊關閉鉤子
                 atexit.register(cls._instance._close_pool)
                 cls._pool_initialized = True
     
     def _init_connection_pool(self, min_conn=1, max_conn=20):
-        """Initialize the connection pool"""
+        """Initialize the connection pool (psycopg 3 version)"""
         try:
-            self.connection_pool = pool.SimpleConnectionPool(
-                minconn=min_conn,
-                maxconn=max_conn,
-                **self.connection_params
+            # ✅ psycopg 3 的 ConnectionPool API 不同
+            self.connection_pool = ConnectionPool(
+                conninfo=self.dsn,
+                min_size=min_conn,
+                max_size=max_conn,
+                open=True  # 立即開啟連線池
             )
             self._shutting_down = False
-            print(f"PostgreSQL connection pool initialized (min: {min_conn}, max: {max_conn})")
-        except psycopg2.Error as e:
-            print(f"Error initializing connection pool: {e}")
+            print(f"✅ PostgreSQL connection pool initialized (min: {min_conn}, max: {max_conn})")
+        except psycopg.Error as e:
+            print(f"❌ Error initializing connection pool: {e}")
             raise
     
     @classmethod
@@ -99,42 +105,33 @@ class PostgresDBManager:
             raise RuntimeError("Connection pool not initialized")
         
         try:
+            # ✅ psycopg 3 的連線池直接使用，不需 getconn/putconn
             conn = self.connection_pool.getconn()
-            if conn and conn.closed:
-                print("Connection was closed, creating new one...")
-                # 不返回關閉的連接，創建新的
-                self.connection_pool.putconn(conn)
-                conn = psycopg2.connect(**self.connection_params)
             return conn
-        except psycopg2.Error as e:
-            print(f"Error getting connection from pool: {e}")
-            # 如果連接池已關閉，創建一個新的獨立連接
-            if "connection pool is closed" in str(e):
+        except psycopg.Error as e:
+            print(f"❌ Error getting connection from pool: {e}")
+            # 如果連線池出問題，創建臨時連線
+            if "pool is closed" in str(e):
                 print("Connection pool closed, creating temporary connection...")
-                return psycopg2.connect(**self.connection_params)
+                return psycopg.connect(self.dsn)
             raise
     
     def return_connection(self, conn):
         """Return a connection to the pool"""
-        if self._shutting_down:
+        if self._shutting_down or self.connection_pool is None:
             if conn:
                 conn.close()
             return
             
-        if self.connection_pool and conn:
+        try:
+            # ✅ psycopg 3 使用 putconn
+            self.connection_pool.putconn(conn)
+        except psycopg.Error as e:
+            print(f"❌ Error returning connection to pool: {e}")
             try:
-                # 檢查連接是否還有效
-                if conn.closed:
-                    print("Connection is closed, not returning to pool")
-                    return
-                self.connection_pool.putconn(conn)
-            except psycopg2.Error as e:
-                print(f"Error returning connection to pool: {e}")
-                # 如果無法返回連接池，直接關閉
-                try:
-                    conn.close()
-                except:
-                    pass
+                conn.close()
+            except:
+                pass
 
     def execute_query(self, query, params=None, fetch=True):
         """Execute a query using connection pool"""
@@ -142,14 +139,14 @@ class PostgresDBManager:
         cursor = None
         try:
             conn = self.get_connection()
+            # ✅ psycopg 3 的 cursor 使用方式相同
             cursor = conn.cursor()
             
             cursor.execute(query, params)
             
-            if fetch==True:
+            if fetch:
                 if query.strip().upper().startswith('SELECT'):
                     result = cursor.fetchall()
-                    # print('Fetched result:', result)
                     return result
                 else:
                     conn.commit()
@@ -158,10 +155,10 @@ class PostgresDBManager:
                 conn.commit()
                 return None
                 
-        except psycopg2.Error as e:
+        except psycopg.Error as e:
             if conn:
                 conn.rollback()
-            # print(f"Database error: {e}")
+            print(f"❌ Database error: {e}")
             raise
         finally:
             if cursor:
@@ -169,50 +166,8 @@ class PostgresDBManager:
             if conn:
                 self.return_connection(conn)
 
-    def connect(self):
-        """Establish a connection to the database (legacy method)"""
-        try:
-            self.conn = self.get_connection()
-            self.cursor = self.conn.cursor()
-        except psycopg2.Error as e:
-            print(f"Error connecting to PostgreSQL database: {e}")
-            raise
-
-    def _close_pool(self):
-        """Close the connection pool safely"""
-        if self._shutting_down:
-            return
-            
-        self._shutting_down = True
-        print("Closing database connection pool...")
-        
-        if self.connection_pool:
-            try:
-                self.connection_pool.closeall()
-                print("All database connections closed.")
-            except Exception as e:
-                print(f"Error closing connection pool: {e}")
-
-    # def execute(self, query, params=None):
-    #     """Execute a query within context manager"""
-    #     if not self._current_cursor:
-    #         raise RuntimeError("Must be used within 'with' context manager")
-    #     return self._current_cursor.execute(query, params)
-    
-    # def fetchall(self):
-    #     """Fetch all results within context manager"""
-    #     if not self._current_cursor:
-    #         raise RuntimeError("Must be used within 'with' context manager")
-    #     return self._current_cursor.fetchall()
-    
-    # def fetchone(self):
-    #     """Fetch one result within context manager"""
-    #     if not self._current_cursor:
-    #         raise RuntimeError("Must be used within 'with' context manager")
-    #     return self._current_cursor.fetchone()
-    
     def execute_returning(self, query, params=None):
-        """執行查詢並返回結果(特別用於 INSERT ... RETURNING)"""
+        """Execute query with RETURNING clause"""
         conn = None
         cursor = None
         try:
@@ -225,13 +180,29 @@ class PostgresDBManager:
             conn.commit()
             return result
                 
-        except psycopg2.Error as e:
+        except psycopg.Error as e:
             if conn:
                 conn.rollback()
-            print(f"Database error: {e}")
+            print(f"❌ Database error: {e}")
             raise
         finally:
             if cursor:
                 cursor.close()
             if conn:
                 self.return_connection(conn)
+
+    def _close_pool(self):
+        """Close the connection pool safely"""
+        if self._shutting_down:
+            return
+            
+        self._shutting_down = True
+        print("Closing database connection pool...")
+        
+        if self.connection_pool:
+            try:
+                # ✅ psycopg 3 使用 close()
+                self.connection_pool.close()
+                print("✅ All database connections closed.")
+            except Exception as e:
+                print(f"❌ Error closing connection pool: {e}")

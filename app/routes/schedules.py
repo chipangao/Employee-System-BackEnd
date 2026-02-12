@@ -1,7 +1,8 @@
 from flask import Blueprint, json, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, date, timedelta
-import psycopg2
+
+import psycopg
 from app.database import PostgresDBManager
 from config import Config
 
@@ -374,7 +375,7 @@ def update_schedule(schedule_id):
             'error': str(e)
         }), 400
         
-    except psycopg2.Error as e:
+    except psycopg.Error as e:
         return jsonify({
             'success': False,
             'error': f'數據庫錯誤: {str(e)}'

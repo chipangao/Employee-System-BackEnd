@@ -6,7 +6,6 @@ from flask_jwt_extended import (
     unset_jwt_cookies
 )
 from datetime import timedelta ,timedelta , timezone ,datetime
-import psycopg2
 import pyotp
 import os
 
